@@ -45,9 +45,9 @@ void core::DendriteUnit::dendritePrimExecution()
 				uint64_t right_h = prim_matrix_multiply.left_w_;
 				uint64_t right_w = prim_matrix_multiply.right_w_;
 
-				std::vector<std::vector<BFloat16>> left_matrix(left_h, std::vector<BFloat16>(left_w, 0));
-				std::vector<std::vector<BFloat16>> right_matrix(right_h, std::vector<BFloat16>(right_w, 0));
-				std::vector<std::vector<BFloat16>> bias_matrix(left_h, std::vector<BFloat16>(right_w, 0));
+				vector<vector<float>> left_matrix(left_h, vector<float>(left_w, 0));
+				vector<vector<float>> right_matrix(right_h, vector<float>(right_w, 0));
+				vector<vector<float>> bias_matrix(left_h, vector<float>(right_w, 0));
 
 				// read the left matrix from SRAM
 				left_matrix = readMatrix(prim_matrix_multiply.left_addr_, left_h, left_w);
@@ -59,16 +59,14 @@ void core::DendriteUnit::dendritePrimExecution()
 
 				// compute result
 				cout << endl;
-				std::vector<std::vector<BFloat16>> result_matrix(left_h, std::vector<BFloat16>(right_w, 0));
+				vector<vector<float>> result_matrix(left_h, vector<float>(right_w, 0));
 				for (int i = 0; i < left_h; ++i) {
 					for (int j = 0; j < right_w; ++j) {
-						float temp = 0;
 						for (int k = 0; k < left_w; ++k) {
-							temp += f32_from_bits(left_matrix[i][k].x) * f32_from_bits(right_matrix[k][j].x);
+							result_matrix[i][j] += left_matrix[i][k] * right_matrix[k][j];
 						}
-						temp += f32_from_bits(bias_matrix[i][j].x);
-						result_matrix[i][j].x += bits_from_f32(temp);
-						cout << f32_from_bits(result_matrix[i][j].x) << " ";
+						result_matrix[i][j] += bias_matrix[i][j];
+						cout << result_matrix[i][j] << " ";
 					}
 				}
 				// write the result matrix to SRAM
@@ -86,8 +84,8 @@ void core::DendriteUnit::dendritePrimExecution()
 	}
 }
 
-std::vector<std::vector<BFloat16>> core::DendriteUnit::readMatrix(uint64_t addr, uint64_t height, uint64_t width) {
-	std::vector<std::vector<BFloat16>> matrix(height, std::vector<BFloat16>(width, 0));
+vector<vector<float>> core::DendriteUnit::readMatrix(uint64_t addr, uint64_t height, uint64_t width) {
+	vector<vector<float>> matrix(height, vector<float>(width, 0));
 	sc_bv<MEM_PORT_WIDTH> mem_temp;
 	core_mem_port->read(addr, mem_temp);  // read data from memory
 	uint64_t lines = 0;
@@ -95,8 +93,8 @@ std::vector<std::vector<BFloat16>> core::DendriteUnit::readMatrix(uint64_t addr,
 	for (auto i = 0; i < height; i++) {
 		for (auto j = 0; j < width; j++) {
 			BFloat16 temp_bfloat16(mem_temp.range(16 * (index + 1) - 1, 16 * index));
-			matrix[i][j] = temp_bfloat16;
-			cout << f32_from_bits(matrix[i][j].x) << " ";
+			matrix[i][j] = f32_from_bits(temp_bfloat16.x);
+			cout << matrix[i][j] << " ";
 			index += 1;
 			if (index == MEM_PORT_WIDTH / 16 - 1) {
 				lines += 1;
@@ -108,14 +106,14 @@ std::vector<std::vector<BFloat16>> core::DendriteUnit::readMatrix(uint64_t addr,
 	return matrix;
 }
 
-void core::DendriteUnit::writeMatrix(uint64_t addr, std::vector<std::vector<BFloat16>> matrix, uint64_t height, uint64_t width){
+void core::DendriteUnit::writeMatrix(uint64_t addr, vector<vector<float>> matrix, uint64_t height, uint64_t width){
 	// write the result matrix to SRAM
 	sc_bv<MEM_PORT_WIDTH> mem_temp;
 	uint64_t lines = 0;
 	uint64_t index = 0;
 	for (auto i = 0; i < height; i++) {
 		for (auto j = 0; j < width; j++) {
-			mem_temp.range(16 * (index + 1) - 1, 16 * index) = to_bits(matrix[i][j]);
+			mem_temp.range(16 * (index + 1) - 1, 16 * index) = sc_bv<16>(bits_from_f32(matrix[i][j]));
 			index += 1;
 			if (index == MEM_PORT_WIDTH / 16 - 1) {
 				core_mem_port->write(addr + lines, mem_temp, 1);
@@ -131,4 +129,55 @@ void core::DendriteUnit::writeMatrix(uint64_t addr, std::vector<std::vector<BFlo
 	core_mem_port->read(addr + lines + 1, irrelavent_part);
 	mem_temp.range(MEM_PORT_WIDTH - 1, 16 * (index + 1)) = irrelavent_part(MEM_PORT_WIDTH - 1, 16 * (index + 1));
 	core_mem_port->write(addr + lines, mem_temp, 1);
+}
+
+void core::DendriteUnit::writeTensor(vector<vector<vector<float>>> tensor, uint64_t addr, uint64_t n_channels, uint64_t height, uint64_t width){
+	// write the result matrix to SRAM
+	sc_bv<MEM_PORT_WIDTH> mem_temp;
+	uint64_t lines = 0;
+	uint64_t index = 0;
+	for (auto i = 0; i < n_channels; i++) {
+		for (auto j = 0; j < height; j++) {
+			for (auto k = 0; k < width; k++) {
+				mem_temp.range(16 * (index + 1) - 1, 16 * index) = sc_bv<16>(bits_from_f32(tensor[i][j][k]));
+				index += 1;
+				if (index == MEM_PORT_WIDTH / 16 - 1) {
+					core_mem_port->write(addr + lines, mem_temp, 1);
+					lines += 1;
+					index = 0;
+				}
+			}
+		}
+	}
+
+	// Write the remaining portion of the matrix into SRAM. 
+	// Ensuring it is merged with the irrelavent content in SRAM.
+	sc_bv<MEM_PORT_WIDTH> irrelavent_part;
+	core_mem_port->read(addr + lines + 1, irrelavent_part);
+	mem_temp.range(MEM_PORT_WIDTH - 1, 16 * (index + 1)) = irrelavent_part(MEM_PORT_WIDTH - 1, 16 * (index + 1));
+	core_mem_port->write(addr + lines, mem_temp, 1);
+}
+
+vector<vector<vector<float>>> core::DendriteUnit::readTensor(uint64_t addr, uint64_t n_channels, uint64_t height, uint64_t width){
+	vector<vector<vector<float>>> tensor(n_channels, vector<vector<float>>(height, vector<float>(width, 0)));
+	sc_bv<MEM_PORT_WIDTH> mem_temp;
+	core_mem_port->read(addr, mem_temp);  // read data from memory
+	uint64_t lines = 0;
+	uint64_t index = 0;
+	for (auto i = 0; i < n_channels; i++) {
+		for (auto j = 0; j < height; j++) {
+			for (auto k = 0; k < width; k++) {
+				BFloat16 temp_bfloat16(mem_temp.range(16 * (index + 1) - 1, 16 * index));
+				tensor[i][j][k] = f32_from_bits(temp_bfloat16.x);
+				cout << tensor[i][j][k] << " ";
+				index += 1;
+				if (index == MEM_PORT_WIDTH / 16 - 1) {
+					lines += 1;
+					index = 0;
+					core_mem_port->read(addr + lines, mem_temp);  // read data from memory
+				}
+			}
+		}
+	}
+	return tensor;
 }

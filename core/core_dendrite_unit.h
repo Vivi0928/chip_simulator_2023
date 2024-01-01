@@ -34,8 +34,11 @@ namespace core {
 
 		void dendriteStateTrans();
 		void dendritePrimExecution();
-		std::vector<std::vector<BFloat16>> readMatrix(uint64_t addr, uint64_t height, uint64_t width);
-		void writeMatrix(uint64_t addr, std::vector<std::vector<BFloat16>> matrix, uint64_t height, uint64_t width);
+		vector<vector<float>> readMatrix(uint64_t addr, uint64_t height, uint64_t width);
+		void writeMatrix(uint64_t addr, vector<vector<float>> matrix, uint64_t height, uint64_t width);
+
+		vector<vector<vector<float>>> readTensor(uint64_t addr, uint64_t n_channels, uint64_t height, uint64_t width);
+		void writeTensor(vector<vector<vector<float>>> tensor, uint64_t addr, uint64_t n_channels, uint64_t height, uint64_t width);
 
 	public:
 		sc_in<sc_bv<MEM_PORT_WIDTH> > prim_in;
